@@ -1,17 +1,15 @@
+from datetime import datetime
 import json
 import os
-import time
-from datetime import datetime
 from dotenv import load_dotenv
 import requests
 
-# 載入 .env 設定
+# 載入環境變數（本機開發用 .env，GitHub Actions 會讀取 Secrets）
 load_dotenv()
 
 # ==================== 參數讀取 ====================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 KEYWORD = os.getenv("MONITOR_KEYWORD", "PS5 主機")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "180"))
 MIN_PRICE = int(os.getenv("MIN_PRICE", "0"))
 MAX_PRICE = int(os.getenv("MAX_PRICE", "99999999"))
 
@@ -37,7 +35,7 @@ def save_seen_item(item_id):
 
 def send_discord_notification(item):
     if not DISCORD_WEBHOOK_URL or "discord.com" not in DISCORD_WEBHOOK_URL:
-        print(f"[本機模擬] 新商品: {item['name']} - ¥{item['price']:,}")
+        print(f"[模擬通知] 新商品: {item['name']} - ¥{item['price']:,}")
         return
 
     payload = {
@@ -108,7 +106,6 @@ def search_mercari(keyword):
                 price = int(item.get("price", 0))
                 name = item.get("name", "")
 
-                # 價格範圍與負向詞過濾
                 if not (MIN_PRICE <= price <= MAX_PRICE):
                     continue
                 if any(bad_word in name for bad_word in EXCLUDE_WORDS):
@@ -136,44 +133,39 @@ def search_mercari(keyword):
         return []
 
 
-def run_monitor():
+def run_once():
+    """執行單趟檢查後直接結束程式"""
     seen_ids = load_seen_items()
     print(
-        f"[{datetime.now().strftime('%H:%M:%S')}] 監控已啟動：{KEYWORD} (價格: ¥{MIN_PRICE} ~ ¥{MAX_PRICE})"
+        f"[{datetime.now().strftime('%H:%M:%S')}] 開始單次檢查：{KEYWORD} (歷史記錄: {len(seen_ids)} 件)"
     )
+
+    items = search_mercari(KEYWORD)
+    new_items_count = 0
+
+    # 如果是第一次執行（檔案是空的），先記錄現有項目但不推播，避免一次跳出幾十筆訊息洗版
     is_first_run = len(seen_ids) == 0
 
-    while True:
-        try:
-            items = search_mercari(KEYWORD)
-            new_items_count = 0
+    for item in reversed(items):
+        item_id = item["id"]
+        if item_id not in seen_ids:
+            seen_ids.add(item_id)
+            save_seen_item(item_id)
+            new_items_count += 1
 
-            for item in reversed(items):
-                item_id = item["id"]
-                if item_id not in seen_ids:
-                    seen_ids.add(item_id)
-                    save_seen_item(item_id)
-                    new_items_count += 1
+            if not is_first_run:
+                print(f"推播新商品: {item['name']} (¥{item['price']:,})")
+                send_discord_notification(item)
 
-                    if not is_first_run:
-                        print(f"推播新商品: {item['name']} (¥{item['price']:,})")
-                        send_discord_notification(item)
-
-            if is_first_run:
-                print(
-                    f"初始化完畢，已暫存現有 {len(items)} 筆商品，後續有新上架即會通知。"
-                )
-                is_first_run = False
-            else:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次新增 {new_items_count} 件"
-                )
-
-        except Exception as e:
-            print(f"監控錯誤: {e}")
-
-        time.sleep(CHECK_INTERVAL)
+    if is_first_run:
+        print(
+            f"初始化完成：已寫入現有 {len(items)} 件商品至清單，下回排程有更新將立即通知。"
+        )
+    else:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次發現 {new_items_count} 件新商品。"
+        )
 
 
 if __name__ == "__main__":
-    run_monitor()
+    run_once()
