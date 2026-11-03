@@ -29,6 +29,7 @@ jobs:
       - name: 執行單次檢查
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          MONITOR_KEYWORD: ${{ secrets.MONITOR_KEYWORD }}
         run: |
           python mercari_monitor.py
 
