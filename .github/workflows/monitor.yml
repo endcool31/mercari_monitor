@@ -1,0 +1,29 @@
+name: Mercari Monitor
+
+on:
+  schedule:
+    # 每 15 分鐘自動執行一次 (Cron 語法)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 支援在後台手動點擊按鈕立即執行
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 簽出程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安裝套件
+        run: |
+          pip install requests
+
+      - name: 執行監控腳本
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python mercari_monitor.py
