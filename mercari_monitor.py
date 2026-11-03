@@ -1,23 +1,28 @@
 import json
+import os
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 import requests
 
-# ==================== 設定區塊 ====================
-# 1. 填入你的 Discord Webhook URL（也可用 Telegram 或 LINE 替換）
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"
+# 載入 .env 設定
+load_dotenv()
 
-# 2. 監控的關鍵字與篩選條件
-KEYWORD = "PS5 主機"  # 請輸入想監控的日文或中文關鍵字
-CHECK_INTERVAL_SECONDS = 180  # 每幾秒檢查一次（建議不要低於 60 秒，避免被鎖 IP）
+# ==================== 參數讀取 ====================
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+KEYWORD = os.getenv("MONITOR_KEYWORD", "PS5 主機")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "180"))
+MIN_PRICE = int(os.getenv("MIN_PRICE", "0"))
+MAX_PRICE = int(os.getenv("MAX_PRICE", "99999999"))
 
-# 3. 狀態記錄（記錄已通知過的商品 ID，避免重複洗版）
+# 負向詞排除名單（標題包含任一詞即忽略）
+EXCLUDE_WORDS = ["ジャンク", "故障", "訳あり", "箱のみ", "説明書のみ"]
+
 SEEN_ITEMS_FILE = "seen_items.txt"
 # =================================================
 
 
 def load_seen_items():
-    """讀取已經發過通知的商品 ID"""
     try:
         with open(SEEN_ITEMS_FILE, "r", encoding="utf-8") as f:
             return set(line.strip() for line in f if line.strip())
@@ -26,15 +31,13 @@ def load_seen_items():
 
 
 def save_seen_item(item_id):
-    """保存新通知過的商品 ID"""
     with open(SEEN_ITEMS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{item_id}\n")
 
 
 def send_discord_notification(item):
-    """發送 Discord 嵌入式卡片通知"""
-    if not DISCORD_WEBHOOK_URL or "YOUR_DISCORD" in DISCORD_WEBHOOK_URL:
-        print(f"[模擬通知] 發現新商品: {item['name']} - ¥{item['price']}")
+    if not DISCORD_WEBHOOK_URL or "discord.com" not in DISCORD_WEBHOOK_URL:
+        print(f"[本機模擬] 新商品: {item['name']} - ¥{item['price']:,}")
         return
 
     payload = {
@@ -42,7 +45,7 @@ def send_discord_notification(item):
             {
                 "title": f"🔔 發現新商品：{item['name']}",
                 "url": f"https://jp.mercari.com/item/{item['id']}",
-                "color": 15158332,  # Mercari 紅色系
+                "color": 15158332,
                 "fields": [
                     {
                         "name": "價格",
@@ -67,14 +70,11 @@ def send_discord_notification(item):
         )
         res.raise_for_status()
     except Exception as e:
-        print(f"發送通知失敗: {e}")
+        print(f"發送 Discord 通知失敗: {e}")
 
 
 def search_mercari(keyword):
-    """呼叫 Mercari 搜尋 API 取得最新上架商品"""
     api_url = "https://api.mercari.jp/v2/entities:search"
-
-    # 模擬瀏覽器 Header，Mercari 需要特定的 App-Version 或 DPoP，一般搜尋可用通用 Header
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -87,21 +87,14 @@ def search_mercari(keyword):
         "Referer": "https://jp.mercari.com/",
     }
 
-    # 搜尋條件：依最新上架排序 (ORDER_CREATED_TIME / SORT_SCORE)
     payload = {
-        "userId": "",
-        "pageSize": 20,
-        "pageToken": "",
-        "searchSessionId": "",
-        "indexRouting": "INDEX_ROUTING_UNSPECIFIED",
+        "pageSize": 30,
         "searchCondition": {
             "keyword": keyword,
-            "sort": "SORT_CREATED_TIME",  # 按上架時間排序
-            "order": "ORDER_DESC",  # 降序（最新在上）
-            "status": ["STATUS_ON_SALE"],  # 只看販售中
+            "sort": "SORT_CREATED_TIME",
+            "order": "ORDER_DESC",
+            "status": ["STATUS_ON_SALE"],
         },
-        "default японCondition": {},
-        "serviceFrom": "surugaya",
     }
 
     try:
@@ -112,11 +105,20 @@ def search_mercari(keyword):
             data = response.json()
             items = []
             for item in data.get("items", []):
+                price = int(item.get("price", 0))
+                name = item.get("name", "")
+
+                # 價格範圍與負向詞過濾
+                if not (MIN_PRICE <= price <= MAX_PRICE):
+                    continue
+                if any(bad_word in name for bad_word in EXCLUDE_WORDS):
+                    continue
+
                 items.append(
                     {
                         "id": item.get("id"),
-                        "name": item.get("name"),
-                        "price": item.get("price"),
+                        "name": name,
+                        "price": price,
                         "thumbnail": item.get("thumbnails", [""])[0]
                         if item.get("thumbnails")
                         else "",
@@ -127,9 +129,7 @@ def search_mercari(keyword):
                 )
             return items
         else:
-            print(
-                f"搜尋失敗，HTTP 狀態碼: {response.status_code}（可能遇到 Cloudflare 驗證）"
-            )
+            print(f"Mercari API 回應異常，HTTP 狀態碼: {response.status_code}")
             return []
     except Exception as e:
         print(f"網路連線錯誤: {e}")
@@ -139,44 +139,40 @@ def search_mercari(keyword):
 def run_monitor():
     seen_ids = load_seen_items()
     print(
-        f"[{datetime.now().strftime('%H:%M:%S')}] 監控啟動，關鍵字：'{KEYWORD}'"
+        f"[{datetime.now().strftime('%H:%M:%S')}] 監控已啟動：{KEYWORD} (價格: ¥{MIN_PRICE} ~ ¥{MAX_PRICE})"
     )
-    print(f"已記錄歷史商品數：{len(seen_ids)}")
-
     is_first_run = len(seen_ids) == 0
 
     while True:
         try:
             items = search_mercari(KEYWORD)
-            new_items_found = 0
+            new_items_count = 0
 
-            # 逆序比對（從較舊到最新發送，維持時間順序）
             for item in reversed(items):
                 item_id = item["id"]
                 if item_id not in seen_ids:
                     seen_ids.add(item_id)
                     save_seen_item(item_id)
-                    new_items_found += 1
+                    new_items_count += 1
 
-                    # 第一次啟動腳本時只記錄商品，不洗版發通知
                     if not is_first_run:
-                        print(f"發現新上架: {item['name']} (¥{item['price']})")
+                        print(f"推播新商品: {item['name']} (¥{item['price']:,})")
                         send_discord_notification(item)
 
             if is_first_run:
                 print(
-                    f"初始化完成，已暫存當前前 {len(items)} 筆商品，之後有新商品將會推播通知。"
+                    f"初始化完畢，已暫存現有 {len(items)} 筆商品，後續有新上架即會通知。"
                 )
                 is_first_run = False
             else:
                 print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] 巡檢完成，新增 {new_items_found} 件商品"
+                    f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次新增 {new_items_count} 件"
                 )
 
         except Exception as e:
-            print(f"監控迴圈出錯: {e}")
+            print(f"監控錯誤: {e}")
 
-        time.sleep(CHECK_INTERVAL_SECONDS)
+        time.sleep(CHECK_INTERVAL)
 
 
 if __name__ == "__main__":
