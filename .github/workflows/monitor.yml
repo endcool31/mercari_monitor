@@ -1,11 +1,10 @@
-- name: 安裝套件
-        run: |
-          pip install requests python-dotenv
+name: Mercari Monitor
+
 on:
   schedule:
-    # 每 15 分鐘自動執行一次 (Cron 語法)
+    # 每 15 分鐘自動執行一次
     - cron: '*/15 * * * *'
-  workflow_dispatch: # 支援在後台手動點擊按鈕立即執行
+  workflow_dispatch: # 支援後台手動執行按鈕
 
 jobs:
   run-monitor:
@@ -21,7 +20,7 @@ jobs:
 
       - name: 安裝套件
         run: |
-          pip install requests
+          pip install requests python-dotenv
 
       - name: 執行監控腳本
         env:
