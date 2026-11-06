@@ -4,16 +4,16 @@ import os
 from dotenv import load_dotenv
 import requests
 
-# 載入環境變數（本機開發用 .env，GitHub Actions 會讀取 Secrets）
+# 載入環境變數（本機讀 .env，GitHub Actions 讀 Secrets/Env）
 load_dotenv()
 
-# ==================== 參數讀取 ====================
+# ==================== 設定讀取 ====================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-KEYWORD = os.getenv("MONITOR_KEYWORD", "PS5 主機")
+KEYWORD = os.getenv("MONITOR_KEYWORD", "FGO パーシヴァル アクリルスタンド")
 MIN_PRICE = int(os.getenv("MIN_PRICE", "0"))
 MAX_PRICE = int(os.getenv("MAX_PRICE", "99999999"))
 
-# 負向詞排除名單（標題包含任一詞即忽略）
+# 負向詞排除名單
 EXCLUDE_WORDS = ["ジャンク", "故障", "訳あり", "箱のみ", "説明書のみ"]
 
 SEEN_ITEMS_FILE = "seen_items.txt"
@@ -34,6 +34,7 @@ def save_seen_item(item_id):
 
 
 def send_discord_notification(item):
+    """發送新商品通知卡片"""
     if not DISCORD_WEBHOOK_URL or "discord.com" not in DISCORD_WEBHOOK_URL:
         print(f"[模擬通知] 新商品: {item['name']} - ¥{item['price']:,}")
         return
@@ -71,7 +72,23 @@ def send_discord_notification(item):
         print(f"發送 Discord 通知失敗: {e}")
 
 
+def send_system_message(content):
+    """發送系統狀態通知（如初次啟動確認）"""
+    if not DISCORD_WEBHOOK_URL or "discord.com" not in DISCORD_WEBHOOK_URL:
+        return
+    try:
+        requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": content},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"發送系統訊息失敗: {e}")
+
+
 def search_mercari(keyword):
+    """搜尋 Mercari 商品"""
     api_url = "https://api.mercari.jp/v2/entities:search"
     headers = {
         "User-Agent": (
@@ -126,7 +143,7 @@ def search_mercari(keyword):
                 )
             return items
         else:
-            print(f"Mercari API 回應異常，HTTP 狀態碼: {response.status_code}")
+            print(f"Mercari API 回應異常，HTTP: {response.status_code}")
             return []
     except Exception as e:
         print(f"網路連線錯誤: {e}")
@@ -134,16 +151,13 @@ def search_mercari(keyword):
 
 
 def run_once():
-    """執行單趟檢查後直接結束程式"""
     seen_ids = load_seen_items()
     print(
-        f"[{datetime.now().strftime('%H:%M:%S')}] 開始單次檢查：{KEYWORD} (歷史記錄: {len(seen_ids)} 件)"
+        f"[{datetime.now().strftime('%H:%M:%S')}] 開始巡檢：{KEYWORD} (已記錄商品數: {len(seen_ids)})"
     )
 
     items = search_mercari(KEYWORD)
     new_items_count = 0
-
-    # 如果是第一次執行（檔案是空的），先記錄現有項目但不推播，避免一次跳出幾十筆訊息洗版
     is_first_run = len(seen_ids) == 0
 
     for item in reversed(items):
@@ -153,17 +167,18 @@ def run_once():
             save_seen_item(item_id)
             new_items_count += 1
 
+            # 非初次啟動時，正常發送新商品卡片
             if not is_first_run:
                 print(f"推播新商品: {item['name']} (¥{item['price']:,})")
                 send_discord_notification(item)
 
     if is_first_run:
-        print(
-            f"初始化完成：已寫入現有 {len(items)} 件商品至清單，下回排程有更新將立即通知。"
-        )
+        msg = f"✅ **Mercari 監控已成功啟動！**\n• 監控關鍵字：`{KEYWORD}`\n• 已鎖定現有 {len(items)} 件歷史商品，後續有**新上架**將立即推播！"
+        print(msg)
+        send_system_message(msg)
     else:
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次發現 {new_items_count} 件新商品。"
+            f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次新增 {new_items_count} 件"
         )
 
 
