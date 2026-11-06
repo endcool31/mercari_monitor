@@ -2,10 +2,11 @@ name: Mercari Monitor
 
 on:
   schedule:
-    # 每 15 分鐘自動執行一次
+    # 每 15 分鐘自動執行一次 (Cron 語法)
     - cron: '*/15 * * * *'
-  workflow_dispatch: # 支援後台手動執行按鈕
+  workflow_dispatch: # 支援在 GitHub 網頁後台手動點擊按鈕執行
 
+# 賦予寫入權限，確保 Actions 能將 seen_items.txt 提交並推回倉庫
 permissions:
   contents: write
 
@@ -23,7 +24,7 @@ jobs:
 
       - name: 安裝套件
         run: |
-          pip install requests python-dotenv
+          pip install requests python-dotenv mercapi
 
       - name: 執行單次檢查
         env:
