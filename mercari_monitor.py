@@ -1,10 +1,11 @@
+import asyncio
 from datetime import datetime
 import json
 import os
 from dotenv import load_dotenv
+from mercapi import Mercapi
 import requests
 
-# 載入環境變數（本機讀 .env，GitHub Actions 讀 Secrets/Env）
 load_dotenv()
 
 # ==================== 設定讀取 ====================
@@ -73,7 +74,7 @@ def send_discord_notification(item):
 
 
 def send_system_message(content):
-    """發送系統狀態通知（如初次啟動確認）"""
+    """發送系統狀態通知"""
     if not DISCORD_WEBHOOK_URL or "discord.com" not in DISCORD_WEBHOOK_URL:
         return
     try:
@@ -87,66 +88,42 @@ def send_system_message(content):
         print(f"發送系統訊息失敗: {e}")
 
 
-def search_mercari(keyword):
-    """搜尋 Mercari 商品"""
-    api_url = "https://api.mercari.jp/v2/entities:search"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Origin": "https://jp.mercari.com",
-        "Referer": "https://jp.mercari.com/",
-    }
-
-    payload = {
-        "pageSize": 30,
-        "searchCondition": {
-            "keyword": keyword,
-            "sort": "SORT_CREATED_TIME",
-            "order": "ORDER_DESC",
-            "status": ["STATUS_ON_SALE"],
-        },
-    }
-
+async def search_mercari_async(keyword):
+    """使用 mercapi 模擬動態簽章進行搜尋"""
+    m = Mercapi()
+    items = []
     try:
-        response = requests.post(
-            api_url, headers=headers, json=payload, timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            items = []
-            for item in data.get("items", []):
-                price = int(item.get("price", 0))
-                name = item.get("name", "")
+        results = await m.search(keyword)
+        for item in results.items:
+            price = int(item.price) if item.price else 0
+            name = item.name or ""
+            item_id = getattr(item, "id_", getattr(item, "id", ""))
 
-                if not (MIN_PRICE <= price <= MAX_PRICE):
-                    continue
-                if any(bad_word in name for bad_word in EXCLUDE_WORDS):
-                    continue
+            # 價格範圍與負向詞過濾
+            if not (MIN_PRICE <= price <= MAX_PRICE):
+                continue
+            if any(bad_word in name for bad_word in EXCLUDE_WORDS):
+                continue
 
-                items.append(
-                    {
-                        "id": item.get("id"),
-                        "name": name,
-                        "price": price,
-                        "thumbnail": item.get("thumbnails", [""])[0]
-                        if item.get("thumbnails")
-                        else "",
-                        "status": "販售中"
-                        if item.get("status") == "STATUS_ON_SALE"
-                        else "已售出",
-                    }
-                )
-            return items
-        else:
-            print(f"Mercari API 回應異常，HTTP: {response.status_code}")
-            return []
+            # 取得縮圖
+            thumb = ""
+            if hasattr(item, "thumbnails") and item.thumbnails:
+                thumb = item.thumbnails[0]
+            elif hasattr(item, "thumbnail") and item.thumbnail:
+                thumb = item.thumbnail
+
+            items.append(
+                {
+                    "id": item_id,
+                    "name": name,
+                    "price": price,
+                    "thumbnail": thumb,
+                    "status": "販售中",
+                }
+            )
+        return items
     except Exception as e:
-        print(f"網路連線錯誤: {e}")
+        print(f"Mercari 搜尋抓取失敗: {e}")
         return []
 
 
@@ -156,24 +133,23 @@ def run_once():
         f"[{datetime.now().strftime('%H:%M:%S')}] 開始巡檢：{KEYWORD} (已記錄商品數: {len(seen_ids)})"
     )
 
-    items = search_mercari(KEYWORD)
+    items = asyncio.run(search_mercari_async(KEYWORD))
     new_items_count = 0
     is_first_run = len(seen_ids) == 0
 
     for item in reversed(items):
         item_id = item["id"]
-        if item_id not in seen_ids:
+        if item_id and item_id not in seen_ids:
             seen_ids.add(item_id)
             save_seen_item(item_id)
             new_items_count += 1
 
-            # 非初次啟動時，正常發送新商品卡片
             if not is_first_run:
                 print(f"推播新商品: {item['name']} (¥{item['price']:,})")
                 send_discord_notification(item)
 
     if is_first_run:
-        msg = f"✅ **Mercari 監控已成功啟動！**\n• 監控關鍵字：`{KEYWORD}`\n• 已鎖定現有 {len(items)} 件歷史商品，後續有**新上架**將立即推播！"
+        msg = f"✅ **Mercari 監控已重新啟動！**\n• 監控關鍵字：`{KEYWORD}`\n• 成功鎖定現有 **{len(items)}** 件歷史商品！後續有新上架將立即推播。"
         print(msg)
         send_system_message(msg)
     else:
