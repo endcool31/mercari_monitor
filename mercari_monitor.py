@@ -4,6 +4,7 @@ import json
 import os
 from dotenv import load_dotenv
 from mercapi import Mercapi
+from mercapi.requests.search import SearchRequestData as S
 import requests
 
 load_dotenv()
@@ -89,11 +90,18 @@ def send_system_message(content):
 
 
 async def search_mercari_async(keyword):
-    """使用 mercapi 模擬動態簽章進行搜尋"""
+    """使用最新上架時間排序與販售中過濾"""
     m = Mercapi()
     items = []
     try:
-        results = await m.search(keyword)
+        # 關鍵參數：指定依建立時間降序排序（SORT_CREATED_TIME），且只看販售中（STATUS_ON_SALE）
+        results = await m.search(
+            query=keyword,
+            sort_by=S.SortBy.SORT_CREATED_TIME,
+            sort_order=S.SortOrder.ORDER_DESC,
+            status=[S.Status.STATUS_ON_SALE],
+        )
+
         for item in results.items:
             price = int(item.price) if item.price else 0
             name = item.name or ""
@@ -105,7 +113,6 @@ async def search_mercari_async(keyword):
             if any(bad_word in name for bad_word in EXCLUDE_WORDS):
                 continue
 
-            # 取得縮圖
             thumb = ""
             if hasattr(item, "thumbnails") and item.thumbnails:
                 thumb = item.thumbnails[0]
@@ -137,6 +144,7 @@ def run_once():
     new_items_count = 0
     is_first_run = len(seen_ids) == 0
 
+    # 依時間由舊到新處理，維持時間序
     for item in reversed(items):
         item_id = item["id"]
         if item_id and item_id not in seen_ids:
@@ -145,16 +153,16 @@ def run_once():
             new_items_count += 1
 
             if not is_first_run:
-                print(f"推播新商品: {item['name']} (¥{item['price']:,})")
+                print(f"推播新上架商品: {item['name']} (¥{item['price']:,})")
                 send_discord_notification(item)
 
     if is_first_run:
-        msg = f"✅ **Mercari 監控已重新啟動！**\n• 監控關鍵字：`{KEYWORD}`\n• 成功鎖定現有 **{len(items)}** 件歷史商品！後續有新上架將立即推播。"
+        msg = f"✅ **Mercari 監控已重新校正！**\n• 模式：**依最新上架排序** (僅限販售中)\n• 關鍵字：`{KEYWORD}`\n• 已鎖定現有 {len(items)} 件最新上架商品，之後一有全新商品將立即推送。"
         print(msg)
         send_system_message(msg)
     else:
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次新增 {new_items_count} 件"
+            f"[{datetime.now().strftime('%H:%M:%S')}] 檢查完成，本次新增 {new_items_count} 件最新商品"
         )
 
 
